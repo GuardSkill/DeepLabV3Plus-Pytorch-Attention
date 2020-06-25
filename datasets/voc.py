@@ -127,14 +127,19 @@ class VOCSegmentation(data.Dataset):
         else:
             mask_dir = os.path.join(voc_root, 'SegmentationClassAug')
             assert os.path.exists(mask_dir), "SegmentationClassAug not found, please refer to README.md and prepare it manually"
-            split_f = os.path.join( self.root, 'train_aug.txt')#'./datasets/data/train_aug.txt'
+            split_f = os.path.join( self.root, 'train_aug.txt')                 #'./datasets/data/train_aug.txt'
 
+        if not is_aug and image_set=='test':
+            mask_dir = os.path.join(voc_root, 'SegmentationClass')
+            splits_dir = os.path.join(voc_root, 'ImageSets/Segmentation')
+            image_set_tmp='val'
+            split_f = os.path.join(splits_dir, image_set_tmp.rstrip('\n') + '.txt')
 
 
         if not os.path.exists(split_f):
             raise ValueError(
                 'Wrong image_set entered! Please use image_set="train" '
-                'or image_set="trainval" or image_set="val  {}"'.format(split_f))
+                'or image_set="trainval" or image_set="val" because can not find {}'.format(split_f))
 
         with open(os.path.join(split_f), "r") as f:
             file_names = [x.strip() for x in f.readlines()]
@@ -177,6 +182,136 @@ class VOCSegmentation(data.Dataset):
         """decode semantic mask to RGB image"""
         return cls.cmap[mask]
 
+
+class VOCSegmentation_multiple(data.Dataset):
+    """`Pascal VOC <http://host.robots.ox.ac.uk/pascal/VOC/>`_ Segmentation Dataset.
+    Args:
+        root (string): Root directory of the VOC Dataset.
+        year (string, optional): The dataset year, supports years 2007 to 2012.
+        image_set (string, optional): Select the image_set to use, ``train``, ``trainval`` or ``val``
+        download (bool, optional): If true, downloads the dataset from the internet and
+            puts it in root directory. If dataset is already downloaded, it is not
+            downloaded again.
+        transform (callable, optional): A function/transform that  takes in an PIL image
+            and returns a transformed version. E.g, ``transforms.RandomCrop``
+    """
+    cmap = voc_cmap()
+
+    def __init__(self,
+                 root,
+                 year='2012',
+                 image_set='train',
+                 divide_data=0, seed=15,
+                 download=False,
+                 transform=None, cur_class=20):
+
+        is_aug = False
+        if year == '2012_aug':
+            is_aug = True
+            year = '2012'
+
+        self.root = os.path.expanduser(root)
+        self.year = year
+        self.url = DATASET_YEAR_DICT[year]['url']
+        self.filename = DATASET_YEAR_DICT[year]['filename']
+        self.md5 = DATASET_YEAR_DICT[year]['md5']
+        self.transform = transform
+
+        self.image_set = image_set
+        base_dir = DATASET_YEAR_DICT[year]['base_dir']
+        voc_root = os.path.join(self.root, base_dir)
+        image_dir = os.path.join(voc_root, 'JPEGImages')
+
+        if download:
+            download_extract(self.url, self.root, self.filename, self.md5)
+
+        if not os.path.isdir(voc_root):
+            raise RuntimeError('Dataset not found or corrupted.' +
+                               ' You can use download=True to download it')
+
+        if not is_aug or image_set == 'val':
+            mask_dir = os.path.join(voc_root, 'SegmentationClass')
+            splits_dir = os.path.join(voc_root, 'ImageSets/Segmentation')
+            split_f = os.path.join(splits_dir, image_set.rstrip('\n') + '.txt')
+
+        elif divide_data == 0 and image_set == 'test':
+            mask_dir = os.path.join(voc_root, 'SegmentationClass')
+            splits_dir = os.path.join(voc_root, 'ImageSets/Segmentation')
+            split_f = os.path.join(splits_dir, 'val'.rstrip('\n') + '.txt')
+
+        else:
+            mask_dir = os.path.join(voc_root, 'SegmentationClassAug')
+            assert os.path.exists(
+                mask_dir), "SegmentationClassAug not found, please refer to README.md and prepare it manually"
+            split_f = os.path.join(self.root, 'train_aug.txt')  # './datasets/data/train_aug.txt'
+
+        if not is_aug and image_set == 'test':
+            mask_dir = os.path.join(voc_root, 'SegmentationClass')
+            splits_dir = os.path.join(voc_root, 'ImageSets/Segmentation')
+            image_set_tmp = 'val'
+            split_f = os.path.join(splits_dir, image_set_tmp.rstrip('\n') + '.txt')
+
+        if not os.path.exists(split_f):
+            raise ValueError(
+                'Wrong image_set entered! Please use image_set="train" '
+                'or image_set="trainval" or image_set="val" because can not find {}'.format(split_f))
+
+        with open(os.path.join(split_f), "r") as f:
+            file_names = [x.strip() for x in f.readlines()]
+
+        self.images = [os.path.join(image_dir, x + ".jpg") for x in file_names]
+        self.masks = [os.path.join(mask_dir, x + ".png") for x in file_names]
+        if divide_data > 0:
+            np.random.seed(seed)
+            train_index = np.random.permutation(len(self.images))[:(-divide_data)]
+            test_index = np.setxor1d(train_index, np.arange(len(self.images)))
+            if image_set == 'train':
+                self.images = [self.images[j] for j in train_index]
+                self.masks = [self.masks[j] for j in train_index]
+            if image_set == 'test':
+                self.images = [self.images[j] for j in test_index]
+                self.masks = [self.masks[j] for j in test_index]
+
+        if image_set=='train' or image_set=='val':
+            Nclass=21
+            img_path_list_per_class = {i: [] for i in range(1, Nclass)}
+            path_list_per_class = {i: [] for i in range(1, Nclass)}
+            for img,mask in zip(self.images,self.masks):
+                target = np.array(Image.open(mask))
+                for i in range(1, Nclass):
+                    if i in target:
+                        img_path_list_per_class[i].append(img)
+                        path_list_per_class[i].append(mask)
+            self.images = img_path_list_per_class[cur_class]
+            self.masks= path_list_per_class[cur_class]
+
+            # np.random.seed(seed)
+            # train_index = np.random.permutation(len(self.images))[:(-divide_data)]
+            # test_index = np.setxor1d(train_index, np.arange(len(self.images)))
+
+        assert (len(self.images) == len(self.masks))
+
+    def __getitem__(self, index):
+        """
+        Args:
+            index (int): Index
+        Returns:
+            tuple: (image, target) where target is the image segmentation.
+        """
+        img = Image.open(self.images[index]).convert('RGB')
+        target = Image.open(self.masks[index])
+        if self.transform is not None:
+            img, target = self.transform(img, target)
+
+        return img, target
+
+    def __len__(self):
+        return len(self.images)
+
+    @classmethod
+    def decode_target(cls, mask):
+        """decode semantic mask to RGB image"""
+        return cls.cmap[mask]
 def download_extract(url, root, filename, md5):
     download_url(url, root, filename, md5)
     with tarfile.open(os.path.join(root, filename), "r") as tar:

@@ -36,7 +36,7 @@ def get_argparser():
                         choices=['deeplabv3_resnet50',  'deeplabv3plus_resnet50',
                                  'deeplabv3_resnet101', 'deeplabv3plus_resnet101',
                                  'deeplabv3_mobilenet', 'deeplabv3plus_mobilenet',
-                                 'deeplabv3plus_mobilenetSA'], help='model name')
+                                 'deeplabv3plus_mobilenetSA','deeplabv3plus_mobilenetSAc'], help='model name')
     parser.add_argument("--separable_conv", action='store_true', default=False,
                         help="apply separable conv to decoder and aspp")
     parser.add_argument("--output_stride", type=int, default=16, choices=[8, 16])
@@ -209,7 +209,8 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
                     plt.close()
                     img_id += 1
 
-        score = metrics.get_results()
+        # score = metrics.get_results()
+        score = metrics.each_get_results()
     return score, ret_samples
 
 
@@ -257,7 +258,8 @@ def main():
         'deeplabv3plus_resnet101': network.deeplabv3plus_resnet101,
         'deeplabv3_mobilenet': network.deeplabv3_mobilenet,
         'deeplabv3plus_mobilenet': network.deeplabv3plus_mobilenet,
-        'deeplabv3plus_mobilenetSA': network.deeplabv3plus_mobilenetSA
+        'deeplabv3plus_mobilenetSA': network.deeplabv3plus_mobilenetSA,
+        'deeplabv3plus_mobilenetSAc': network.deeplabv3plus_mobilenetSAc,
     }
 
     model = model_map[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
@@ -269,12 +271,18 @@ def main():
     metrics = StreamSegMetrics(opts.num_classes)
 
     # Set up optimizer
-    optimizer = torch.optim.SGD(params=[
-        {'params': model.backbone.parameters(), 'lr': 0.1*opts.lr},
-        {'params': model.classifier.parameters(), 'lr': opts.lr},
-    ], lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
+    params_list=[
+        {'params': model.backbone.parameters(), 'lr': 0.1 * opts.lr},
+        {'params': model.classifier.parameters(), 'lr':0.1 * opts.lr}   #opts.lr
+    ]
+    if 'SA' in opts.model:
+        params_list.append({'params': model.attention.parameters(), 'lr':0.1 * opts.lr})
+    # optimizer = torch.optim.SGD(params=params_list, lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)     original use
     #optimizer = torch.optim.SGD(params=model.parameters(), lr=opts.lr, momentum=0.9, weight_decay=opts.weight_decay)
     #torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.lr_decay_step, gamma=opts.lr_decay_factor)
+
+    optimizer = torch.optim.Adam(params=params_list, lr=opts.lr,weight_decay=opts.weight_decay)
+
     if opts.lr_policy=='poly':
         scheduler = utils.PolyLR(optimizer, opts.total_itrs, power=0.9)
     elif opts.lr_policy=='step':
@@ -305,7 +313,6 @@ def main():
     cur_itrs = 0
     cur_epochs = 0
     if opts.ckpt is not None and os.path.isfile(opts.ckpt):
-        # https://github.com/VainF/DeepLabV3Plus-Pytorch/issues/8#issuecomment-605601402, @PytaichukBohdan
         checkpoint = torch.load(opts.ckpt, map_location=torch.device('cpu'))
         model.load_state_dict(checkpoint["model_state"])
         model = nn.DataParallel(model)
@@ -323,19 +330,26 @@ def main():
         model = nn.DataParallel(model)
         model.to(device)
 
-    #==========   Train Loop   ==========#
+    #==========   Test Loop   ==========#
     vis_sample_id = np.random.randint(0, len(test_loader), opts.vis_num_samples,
                                       np.int32) if opts.enable_vis else None  # sample idxs for visualization
     denorm = utils.Denormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # denormalization for ori images
 
     if opts.test_only:
         model.eval()
+        print("val")
         val_score, ret_samples = validate(
-            opts=opts, model=model, loader=test_loader, device=device, metrics=metrics, ret_samples_ids=vis_sample_id)
+            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, ret_samples_ids=vis_sample_id)
         print(metrics.to_str(val_score))
+
+        print("test")
+        test_score, ret_samples = validate(
+            opts=opts, model=model, loader=test_loader, device=device, metrics=metrics, ret_samples_ids=vis_sample_id)
+        print(metrics.to_str(test_score))
         return
 
     interval_loss = 0
+    #==========   Train Loop   ==========#
     while True: #cur_itrs < opts.total_itrs:
         # =====  Train  =====
         model.train()
@@ -347,8 +361,8 @@ def main():
             labels = labels.to(device, dtype=torch.long)
 
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+            outputs = model(images).squeeze()
+            loss = criterion(outputs, labels.squeeze())
             loss.backward()
             optimizer.step()
 

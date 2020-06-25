@@ -1,5 +1,6 @@
 from .utils import IntermediateLayerGetter
-from ._deeplab import DeepLabHead, DeepLabHeadV3Plus, DeepLabV3, DeepLabV3SA, Self_Attn
+from ._deeplab import DeepLabHead, DeepLabHeadV3Plus, DeepLabV3, DeepLabV3SA, Self_Attn, DeepLabV3SAc, \
+    DeepLabHeadV3PlusSAc
 from .backbone import resnet
 from .backbone import mobilenetv2
 
@@ -86,8 +87,14 @@ def _segm_mobilenet_SA(name, backbone_name, num_classes, output_stride, pretrain
         return_layers = {'high_level_features': 'out'}
         classifier = DeepLabHead(inplanes, num_classes, aspp_dilate)
     backbone = IntermediateLayerGetter(backbone, return_layers=return_layers)
-
-    model = DeepLabV3SA(backbone,attention, classifier)
+    if backbone_name=='mobilenetv2SA':
+        model = DeepLabV3SA(backbone,attention, classifier)
+    elif backbone_name=='mobilenetv2SAc':
+        del classifier
+        classifier = DeepLabHeadV3PlusSAc(inplanes,low_level_planes, num_classes, aspp_dilate)
+        model = DeepLabV3SAc(backbone, attention, classifier)
+    else:
+        raise RuntimeError("No valid backbone!")
     return model
 
 def _load_model(arch_type, backbone, num_classes, output_stride, pretrained_backbone):
@@ -96,6 +103,19 @@ def _load_model(arch_type, backbone, num_classes, output_stride, pretrained_back
         model = _segm_mobilenet(arch_type, backbone, num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
     elif backbone=='mobilenetv2SA':
         model = _segm_mobilenet_SA(arch_type, backbone, num_classes, output_stride=output_stride,pretrained_backbone=pretrained_backbone)
+    elif backbone=='mobilenetv2SAc':
+        model = _segm_mobilenet_SA(arch_type, backbone, num_classes, output_stride=output_stride,
+                                   pretrained_backbone=pretrained_backbone)
+    # elif backbone=='mobilenetv2SAc_M':
+    #     model = _segm_mobilenet_SA(arch_type, backbone, 1, output_stride=output_stride,
+    #                                pretrained_backbone=pretrained_backbone)
+    # elif backbone=='mobilenetv2SA_M':
+    #     model = _segm_mobilenet_SA(arch_type, backbone, 1, output_stride=output_stride,
+    #                                pretrained_backbone=pretrained_backbone)
+    # elif backbone == 'mobilenetv2_M':
+    #     model = _segm_mobilenet(arch_type, backbone, 1, output_stride=output_stride,
+    #                            pretrained_backbone=pretrained_backbone)
+
     elif backbone.startswith('resnet'):
         model = _segm_resnet(arch_type, backbone, num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
     else:
@@ -179,3 +199,42 @@ def deeplabv3plus_mobilenetSA(num_classes=21, output_stride=8, pretrained_backbo
         pretrained_backbone (bool): If True, use the pretrained backbone.
     """
     return _load_model('deeplabv3plus', 'mobilenetv2SA', num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+
+def deeplabv3plus_mobilenetSAc(num_classes=21, output_stride=8, pretrained_backbone=True):
+    """Constructs a DeepLabV3+ model with a MobileNetv2 backbone and self-attention.
+
+    Args:
+        num_classes (int): number of classes.
+        output_stride (int): output stride for deeplab.
+        pretrained_backbone (bool): If True, use the pretrained backbone.
+    """
+    return _load_model('deeplabv3plus', 'mobilenetv2SAc', num_classes, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+def deeplabv3plus_mobilenetM(num_classes=21, output_stride=8, pretrained_backbone=True):
+    """Constructs a DeepLabV3+ model with a MobileNetv2 backbone.
+
+    Args:
+        num_classes (int): number of classes.
+        output_stride (int): output stride for deeplab.
+        pretrained_backbone (bool): If True, use the pretrained backbone.
+    """
+    return _load_model('deeplabv3plus', 'mobilenetv2', 1, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+
+def deeplabv3plus_mobilenetSAM(num_classes=21, output_stride=8, pretrained_backbone=True):
+    """Constructs a DeepLabV3+ model with a MobileNetv2 backbone and self-attention.
+
+    Args:
+        num_classes (int): number of classes.
+        output_stride (int): output stride for deeplab.
+        pretrained_backbone (bool): If True, use the pretrained backbone.
+    """
+    return _load_model('deeplabv3plus', 'mobilenetv2SA', 1, output_stride=output_stride, pretrained_backbone=pretrained_backbone)
+
+def deeplabv3plus_mobilenetSAcM(num_classes=21, output_stride=8, pretrained_backbone=True):
+    """Constructs a DeepLabV3+ model with a MobileNetv2 backbone and self-attention.
+
+    Args:
+        num_classes (int): number of classes.
+        output_stride (int): output stride for deeplab.
+        pretrained_backbone (bool): If True, use the pretrained backbone.
+    """
+    return _load_model('deeplabv3plus', 'mobilenetv2SAc', 1, output_stride=output_stride, pretrained_backbone=pretrained_backbone)

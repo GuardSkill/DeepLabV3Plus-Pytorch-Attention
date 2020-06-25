@@ -4,12 +4,13 @@ import numpy as np
 import torch.nn.functional as F
 from collections import OrderedDict
 
+
 class _SimpleSegmentationModel(nn.Module):
     def __init__(self, backbone, classifier):
         super(_SimpleSegmentationModel, self).__init__()
         self.backbone = backbone
         self.classifier = classifier
-        
+
     def forward(self, x):
         input_shape = x.shape[-2:]
         features = self.backbone(x)
@@ -19,19 +20,59 @@ class _SimpleSegmentationModel(nn.Module):
 
 
 class _SimpleSegmentationModelSA(nn.Module):
-    def __init__(self, backbone, attention,classifier):
+    def __init__(self, backbone, attention, classifier):
         super(_SimpleSegmentationModelSA, self).__init__()
         self.backbone = backbone
-        self.attention=attention
+        self.attention = attention
         self.classifier = classifier
 
     def forward(self, x):
         input_shape = x.shape[-2:]
         features = self.backbone(x)
-        features['out'],p=self.attention(features['out'])
+        features['out'], p = self.attention(features['out'])
         x = self.classifier(features)
         x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
         return x
+
+
+class _SimpleSegmentationModelSAc(nn.Module):
+    def __init__(self, backbone, attention, classifier):
+        super(_SimpleSegmentationModelSAc, self).__init__()
+        self.backbone = backbone
+        self.attention = attention
+        self.classifier = classifier
+
+    def forward(self, x):
+        input_shape = x.shape[-2:]
+        features = self.backbone(x)
+        attention_value, p = self.attention(features['out'])
+        x = self.classifier(features,attention_value)
+        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
+        return x
+
+
+    # def __init__(self, backbone, attention, classifier):
+    #     super(_SimpleSegmentationModelSAc, self).__init__()
+    #     self.backbone = backbone
+    #     self.attention = attention
+    #     self.classifier = classifier
+    #
+    # def forward(self, x):
+    #     input_shape = x.shape[-2:]
+    #     features = self.backbone(x)
+    #     attention_value, p = self.attention(features['out'])
+    #
+    #     low_level_feature = self.classifier.project(features['low_level'])
+    #     aspp_feature = self.classifier.aspp(features['out'])
+    #
+    #     x = F.interpolate(attention_value+aspp_feature, size=low_level_feature.shape[2:], mode='bilinear',
+    #                                    align_corners=False)
+
+        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
+
+        return x
+
+
 class IntermediateLayerGetter(nn.ModuleDict):
     """
     Module wrapper that returns intermediate layers from a model
@@ -63,6 +104,7 @@ class IntermediateLayerGetter(nn.ModuleDict):
         >>>     [('feat1', torch.Size([1, 64, 56, 56])),
         >>>      ('feat2', torch.Size([1, 256, 14, 14]))]
     """
+
     def __init__(self, model, return_layers):
         if not set(return_layers).issubset([name for name, _ in model.named_children()]):
             raise ValueError("return_layers are not present in model")
