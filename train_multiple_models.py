@@ -8,6 +8,7 @@ import numpy as np
 
 from torch.utils import data
 from datasets import VOCSegmentation, Cityscapes
+from datasets.cityscapes import Cityscapes_multiple
 from datasets.voc import VOCSegmentation_multiple
 from utils import ext_transforms as et
 from metrics import StreamSegMetrics
@@ -103,7 +104,7 @@ def get_argparser():
                         help="random seed (default: 1)")
     parser.add_argument("--print_interval", type=int, default=10,
                         help="print interval of loss (default: 10)")
-    parser.add_argument("--val_interval", type=int, default=100,
+    parser.add_argument("--val_interval", type=int, default=200,
                         help="epoch interval for eval (default: 100)")
     parser.add_argument("--download", action='store_true', default=False,
                         help="download datasets")
@@ -123,6 +124,8 @@ def get_argparser():
                         help='number of samples for visualization (default: 8)')
     parser.add_argument("--start_class", type=int, default=1,
                         help='The start class (default: 1)')
+    parser.add_argument("--gpu_id", type=str, default='0',
+                        help="GPU ID")
     return parser
 
 
@@ -185,8 +188,8 @@ def get_dataset(opts):
                                split='train', transform=train_transform)
         val_dst = Cityscapes(root=opts.data_root,
                              split='val', transform=val_transform)
-        test_dst = Cityscapes(root=opts.data_root,
-                              split='val', transform=val_transform)
+        test_dst = Cityscapes(root=opts.data_root,divide_data=opts.divide_data,
+                              split='test', transform=val_transform)
     return train_dst, val_dst, test_dst
 
 
@@ -245,12 +248,14 @@ def get_dataset_multiple(opts, idx):
                             std=[0.229, 0.224, 0.225]),
         ])
 
-        train_dst = Cityscapes(root=opts.data_root,
-                               split='train', transform=train_transform)
-        val_dst = Cityscapes(root=opts.data_root,
-                             split='val', transform=val_transform)
+        train_dst = Cityscapes_multiple(root=opts.data_root,
+                                        split='train', divide_data=opts.divide_data, transform=train_transform,
+                                        cur_class=idx - 1)
+        val_dst = Cityscapes_multiple(root=opts.data_root,
+                                      split='val', divide_data=opts.divide_data, transform=val_transform,
+                                      cur_class=idx - 1)
         test_dst = Cityscapes(root=opts.data_root,
-                              split='val', transform=val_transform)
+                              split='test', divide_data=opts.divide_data, transform=val_transform)
     return train_dst, val_dst, test_dst
 
 
@@ -270,7 +275,10 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None, class_n
 
             images = images.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
+            if opts.dataset.lower() == 'cityscapes':
+                labels = labels + 1
             labels[labels != class_num] = 0  # Get the mask for single class
+            # labels[labels == class_num] = 1
             # labels = (labels==class_num).float()
             # mask = labels.detach().cpu().numpy()
             outputs = nn.Sigmoid()(model(images))
@@ -333,7 +341,7 @@ def test_multiple(opts, loader, device, metrics, ret_samples_ids=None):
 
             preds = []
             for class_num in range(1, opts.num_classes):
-                modelname = 'checkpoints/multiple_model/latest_%s_%s_class%d_os%d.pth' % (
+                modelname = 'checkpoints/multiple_model/best_%s_%s_class%d_os%d.pth' % (
                     opts.model, opts.dataset, class_num, opts.output_stride,)
                 checkpoint = torch.load(modelname, map_location=torch.device('cpu'))
                 model = model_map[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
@@ -348,7 +356,12 @@ def test_multiple(opts, loader, device, metrics, ret_samples_ids=None):
 
             modelname = opts.sin_model
             checkpoint = torch.load(modelname, map_location=torch.device('cpu'))
-            model = model_map[opts.model.split('_')[0] + '_' + opts.model.split('_')[1]](num_classes=opts.num_classes,
+
+            if opts.dataset.lower() == 'cityscapes':
+                Nclass = 19
+            else:
+                Nclass = opts.num_classes
+            model = model_map[opts.model.split('_')[0] + '_' + opts.model.split('_')[1]](num_classes=Nclass,
                                                                                          output_stride=opts.output_stride)
             model.load_state_dict(checkpoint["model_state"])
             model = nn.DataParallel(model)
@@ -370,8 +383,9 @@ def test_multiple(opts, loader, device, metrics, ret_samples_ids=None):
             # alpha=0.5
             alpha = opts.alpha
             preds = np.concatenate(preds, 1)
-            background_p = np.expand_dims(sin_outputs[:, 0, :, :], axis=1)  # 抽取单类模型预测的背景概率
-            preds = np.concatenate((background_p, preds), 1)  # 单类模型与多雷模型分数融合
+            if opts.dataset.lower() != 'cityscapes':
+                background_p = np.expand_dims(sin_outputs[:, 0, :, :], axis=1)  # 抽取单类模型预测的背景概率
+                preds = np.concatenate((background_p, preds), 1)  # 单类模型与多雷模型分数融合
             final_preds = alpha * preds + sin_outputs
             # final_preds = final_preds.max(dim=1)[1].cpu().numpy()
             preds = np.argmax(final_preds, axis=1)
@@ -412,7 +426,7 @@ def test_multiple(opts, loader, device, metrics, ret_samples_ids=None):
 
 
 def test_multiple_fuse_specific(opts, loader, device, metrics, ret_samples_ids=None):
-    specifc_class_list = [int(i) for i in opts.select_class]    # the list of class score to fuse, start index==1
+    specifc_class_list = [int(i) for i in opts.select_class]  # the list of class score to fuse, start index==1
     metrics.reset()
     ret_samples = []
     if opts.save_val_results:
@@ -498,7 +512,7 @@ def test_multiple_fuse_specific(opts, loader, device, metrics, ret_samples_ids=N
                     plt.savefig('results/%d_overlay.png' % img_id, bbox_inches='tight', pad_inches=0)
                     plt.close()
                     img_id += 1
-        score = metrics.get_results()   # score = metrics.get_results().each_get_results()
+        score = metrics.get_results()  # score = metrics.get_results().each_get_results()
 
     return score, ret_samples
 
@@ -595,7 +609,7 @@ def test_multiple_softmax(opts, loader, device, metrics, ret_samples_ids=None):
 
 
 def test_single(opts, loader, device, metrics, ret_samples_ids=None):
-    for class_num in range(opts.start_class, 21):
+    for class_num in range(opts.start_class, opts.num_classes):
         train_dst, val_dst, test_dst = get_dataset_multiple(opts, class_num)
         train_loader = data.DataLoader(train_dst, batch_size=opts.batch_size, shuffle=True, num_workers=2)
         val_loader = data.DataLoader(val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
@@ -617,6 +631,7 @@ def test_single(opts, loader, device, metrics, ret_samples_ids=None):
                 labels = labels.to(device, dtype=torch.long)
 
                 labels[labels != class_num] = 0
+                # labels[labels == class_num] = 1
                 # mask = labels.detach().cpu().numpy()
                 # labels = (labels == class_num).float()
                 modelname = 'checkpoints/multiple_model/latest_%s_%s_class%d_os%d.pth' % (
@@ -675,11 +690,14 @@ def test_single(opts, loader, device, metrics, ret_samples_ids=None):
 
 def main():
     opts = get_argparser().parse_args()
+
     if opts.dataset.lower() == 'voc':
-        opts.num_classes = 21
+        opts.num_classes = 21                  # voc20只用训练20个类,还有一个背景类,metric就要测试 1-20
     elif opts.dataset.lower() == 'cityscapes':
         opts.num_classes = 19
 
+    if opts.dataset.lower() == 'cityscapes':  # 因为cityscapes没有背景类，实际上要训练19个类,,所以metric就要测试1-19
+        opts.num_classes = 19 + 1
     # Setup visualization
     vis = Visualizer(port=opts.vis_port,
                      env=opts.vis_env) if opts.enable_vis else None
@@ -701,7 +719,7 @@ def main():
 
     # Set up metrics
     # metrics = StreamSegMetrics(opts.num_classes)
-    metrics = StreamSegMetrics(21)
+    metrics = StreamSegMetrics(opts.num_classes)
     # Set up optimizer
     # criterion = utils.get_loss(opts.loss_type)
     if opts.loss_type == 'focal_loss':
@@ -741,13 +759,15 @@ def main():
                                       np.int32) if opts.enable_vis else None  # sample idxs for visualization
 
     denorm = utils.Denormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # denormalization for ori images
+
+
+
     # ==========   Test Loop   ==========#
 
     if opts.test_only:
         print("Dataset: %s,  Val set: %d, Test set: %d" %
               (opts.dataset, len(val_dst), len(test_dst)))
 
-        metrics = StreamSegMetrics(21)
         print("val")
         if opts.select_class:
             test_score, ret_samples = test_multiple_fuse_specific(
@@ -771,11 +791,30 @@ def main():
 
     # ==========   Train Loop   ==========#
     utils.mkdir('checkpoints/multiple_model')
-    for class_num in range(opts.start_class, opts.num_classes):
+
+    for class_num in range(opts.start_class, opts.num_classes):  # 1-19
         # ==========   Dataset   ==========#
+        number_works = 2
         train_dst, val_dst, test_dst = get_dataset_multiple(opts, class_num)
-        train_loader = data.DataLoader(train_dst, batch_size=opts.batch_size, shuffle=True, num_workers=2)
-        val_loader = data.DataLoader(val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
+        num_train = len(train_dst) // number_works
+        mod_train = len(train_dst) % number_works
+        if num_train % opts.batch_size == 1 or (num_train + mod_train) % opts.batch_size == 1:  # 预防batch里只有一个样本
+            droplast = True
+        else:
+            droplast = False
+        train_loader = data.DataLoader(train_dst, batch_size=opts.batch_size, shuffle=True, num_workers=number_works,
+                                       drop_last=droplast)
+        # if opts.dataset.lower() == 'cityscapes' and class_num==17:  #有个类被划分后的验证集没有数据
+        # if len(val_dst) == 0:  # 如果有个类被划分后的验证集没有数据
+        #     val_dst = train_dst
+        num_val = len(val_dst) // number_works
+        mod_val = len(val_dst) % number_works
+        if num_val % opts.val_batch_size == 1 or (num_val + mod_val) % opts.val_batch_size == 1:
+            droplast = True
+        else:
+            droplast = False
+        val_loader = data.DataLoader(val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=number_works,
+                                     drop_last=droplast)
         test_loader = data.DataLoader(test_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
         print("Dataset: %s Class %d, Train set: %d, Val set: %d, Test set: %d" % (
             opts.dataset, class_num, len(train_dst), len(val_dst), len(test_dst)))
@@ -820,6 +859,8 @@ def main():
                 labels = labels.to(device, dtype=torch.long)
                 # x=labels.detach().cpu().numpy()
                 # labels = labels.to(device, dtype=torch.float322
+                if opts.dataset.lower() == 'cityscapes':
+                    labels = labels + 1
                 labels = (labels == class_num).float()
                 # mask=labels.detach().cpu().numpy()
                 # labels[labels == class_num] = 1

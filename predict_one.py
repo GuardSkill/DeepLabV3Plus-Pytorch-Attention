@@ -8,6 +8,9 @@ import numpy as np
 import cv2 as cv
 from torch.nn import functional as F
 
+from datasets import Cityscapes
+from utils import ext_transforms as et
+
 model_map = {
     'deeplabv3_resnet50': network.deeplabv3_resnet50,
     'deeplabv3plus_resnet50': network.deeplabv3plus_resnet50,
@@ -46,8 +49,10 @@ def voc_cmap(N=256, normalized=False):
 
 
 if __name__ == "__main__":
-    img_path = r"samples/114_image.png"              #要测试的图片
-    result_path = r"samples/114_image_results.png"   #要保存的路劲
+    # img_path = r"samples/114_image.png"  # 要测试的图片
+    # result_path = r"samples/114_image_results.png"  # 要保存的路径
+    img_path = r'samples/frankfurt_000000_000294_leftImg8bit.png'
+    result_path = r"samples/image_results.png"  # 要保存的路径
 
     # model_name ='deeplabv3plus_mobilenet'           #用什么模型什么方式
     # model_name ='deeplabv3plus_mobilenetSA'
@@ -56,35 +61,53 @@ if __name__ == "__main__":
     # model_name ='deeplabv3plus_mobilenetSA_M'
     # model_name ='deeplabv3plus_mobilenetSAc_M'
 
-    # 单模型读取
-    ckpt_path = r'checkpoints/best_deeplabv3plus_mobilenet_voc_os16.pth'    #模型参数的位置
+    dataset = 'cityscapes'
+    # dataset='voc'
+
+    # 单模型读取的路径 （sin_model）
+    ckpt_path = r'checkpoints/best_deeplabv3plus_mobilenet_cityscapes_os16.pth'
+    # ckpt_path = r'checkpoints/best_deeplabv3plus_mobilenet_voc_os16.pth'  # 模型参数的位置
     # ckpt_path = r'checkpoints/best_deeplabv3plus_mobilenetSA_voc_os16.pth'
     # ckpt_path = r'checkpoints/best_deeplabv3plus_mobilenetSAc_voc_os16.pth'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    val_transform = transforms.Compose([
-        transforms.Resize(513),
-        transforms.CenterCrop(513),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-    ])
+    if dataset == 'voc':
+        N_class = 21
+        sin_model_class = 21
+        val_transform = transforms.Compose([
+            transforms.Resize(513),
+            transforms.CenterCrop(513),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225]),
+        ])
+    else:
+        N_class = 20
+        sin_model_class = 19
+        val_transform = transforms.Compose([
+            # et.ExtResize( 512 ),
+            # et.ExtToTensor(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225])
+            # et.ExtNormalize(mean=[0.485, 0.456, 0.406],
+            #                 std=[0.229, 0.224, 0.225]),
+        ])
 
     # 图像读取和预处理
     # img = Image.open(img_path).convert('RGB')
     # input = val_transform(img).unsqueeze(0)
     img = Image.open(img_path).convert('RGB')
     img = val_transform(img).unsqueeze(0)
-
     # 如果是多模型融合
     if 'M' in model_name:
         preds = []
-        for class_num in range(1, 21):
+        for class_num in range(1, N_class):
             modelname = 'checkpoints/multiple_model/latest_%s_%s_class%d_os%d.pth' % (
-                model_name, 'voc', class_num, 16,)
+                model_name, dataset, class_num, 16,)
             checkpoint = torch.load(modelname, map_location=torch.device('cpu'))
-            model = model_map[model_name](num_classes=21, output_stride=16)
+            model = model_map[model_name](num_classes=N_class, output_stride=16)
             model.load_state_dict(checkpoint["model_state"])
             model = nn.DataParallel(model)
             model.to(device)
@@ -97,30 +120,35 @@ if __name__ == "__main__":
 
         # 读取单个模型
         checkpoint = torch.load(ckpt_path, map_location=torch.device('cpu'))
-        model = model_map[model_name.split('_')[0] + '_' + model_name.split('_')[1]](num_classes=21,
+        model = model_map[model_name.split('_')[0] + '_' + model_name.split('_')[1]](num_classes=sin_model_class,
                                                                                      output_stride=16)
         model.load_state_dict(checkpoint["model_state"])
-        model = nn.DataParallel(model)
+        if device=='cuda':
+            model = nn.DataParallel(model)
         model.to(device)
         model.eval()
         # sin_outputs = model(images).cpu().numpy()
-        sin_outputs = F.softmax(model(img), dim=1).detach().cpu().numpy()
+        sin_outputs = F.softmax(model(img.to(device)), dim=1).detach().cpu().numpy()
 
         # 融合
         alpha = 0.5
         preds = np.concatenate(preds, 1)
-        background_p = np.expand_dims(sin_outputs[:, 0, :, :], axis=1)  # 抽取单类模型预测的背景概率
-        preds = np.concatenate((background_p, preds), 1)  # 单类模型与多类模型分数融合
+        if dataset.lower() != 'cityscapes':
+            background_p = np.expand_dims(sin_outputs[:, 0, :, :], axis=1)  # 抽取单类模型预测的背景概率
+            preds = np.concatenate((background_p, preds), 1)  # 单类模型与多雷模型分数融合
         final_preds = alpha * preds + sin_outputs
         preds = np.argmax(final_preds, axis=1)
-        pred = voc_cmap()[preds.squeeze(axis=0)].astype(np.uint8)
+        if dataset == 'voc':
+            pred = voc_cmap()[preds.squeeze(axis=0)].astype(np.uint8)
+        else:
+            pred = Cityscapes.decode_target(preds.squeeze(axis=0)).astype(np.uint8)
         Image.fromarray(pred).save(result_path)
         print("Prediction is saved in %s" % result_path)
 
 
     else:
         # 模型加载
-        model = model_map[model_name](num_classes=21, output_stride=16)
+        model = model_map[model_name](num_classes=sin_model_class, output_stride=16)
         weights = torch.load(ckpt_path)["model_state"]
         model.load_state_dict(weights)
         model.to(device)
@@ -131,7 +159,11 @@ if __name__ == "__main__":
             img = img.to(device)
             # preds = outputs.detach().max(dim=1)[1].cpu().numpy()
             pred = model(img).max(dim=1)[1].cpu().numpy()[0, :, :]
-            pred = voc_cmap()[pred].astype(np.uint8)
+
+            if dataset == 'voc':
+                pred = voc_cmap()[pred].astype(np.uint8)
+            else:
+                pred= Cityscapes.decode_target(pred).astype(np.uint8)
 
             Image.fromarray(pred).save(result_path)
             print("Prediction is saved in %s" % result_path)

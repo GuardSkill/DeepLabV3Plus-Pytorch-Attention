@@ -76,7 +76,7 @@ def get_argparser():
                         help="random seed (default: 1)")
     parser.add_argument("--print_interval", type=int, default=10,
                         help="print interval of loss (default: 10)")
-    parser.add_argument("--val_interval", type=int, default=100,
+    parser.add_argument("--val_interval", type=int, default=750,
                         help="epoch interval for eval (default: 100)")
     parser.add_argument("--download", action='store_true', default=False,
                         help="download datasets")
@@ -150,11 +150,11 @@ def get_dataset(opts):
         ])
 
         train_dst = Cityscapes(root=opts.data_root,
-                               split='train', transform=train_transform)
+                               split='train',divide_data=opts.divide_data, transform=train_transform)
         val_dst = Cityscapes(root=opts.data_root,
-                             split='val', transform=val_transform)
+                             split='val',divide_data=opts.divide_data, transform=val_transform)
         test_dst = Cityscapes(root=opts.data_root,
-                             split='val', transform=val_transform)
+                             split='test', divide_data=opts.divide_data,transform=val_transform)
     return train_dst, val_dst,test_dst
 
 
@@ -385,6 +385,13 @@ def main():
                 val_score, ret_samples = validate(
                     opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, ret_samples_ids=vis_sample_id)
                 print(metrics.to_str(val_score))
+
+                # print("testing")
+                # test_score, ret_samples = validate(
+                #     opts=opts, model=model, loader=test_loader, device=device, metrics=metrics,
+                #     ret_samples_ids=vis_sample_id)
+                # print(metrics.to_str(test_score))
+
                 if val_score['Mean IoU'] > best_score:  # save best model
                     best_score = val_score['Mean IoU']
                     save_ckpt('checkpoints/best_%s_%s_os%d.pth' %
